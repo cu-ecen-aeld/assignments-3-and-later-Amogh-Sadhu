@@ -1,4 +1,8 @@
 #include "systemcalls.h"
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <fcntl.h>
 
 /**
  * @param cmd the command to execute with system()
@@ -16,8 +20,13 @@ bool do_system(const char *cmd)
  *   and return a boolean true if the system() call completed with success
  *   or false() if it returned a failure
 */
+int ret = system(cmd);
 
-    return true;
+    if (ret == 0) {
+        return true;
+    } else {
+        return false;
+    }
 }
 
 /**
@@ -49,6 +58,36 @@ bool do_exec(int count, ...)
     // and may be removed
     command[count] = command[count];
 
+    // --- Logic for do_exec ---
+    fflush(stdout);
+    pid_t pid = fork();
+
+    if (pid == -1) {
+        perror("fork");
+        va_end(args);
+        return false;
+    }
+
+    if (pid == 0) {
+        // --- Child Process ---
+        execv(command[0], command);
+
+        // If execv returns, it failed
+        perror("execv");
+        exit(EXIT_FAILURE);
+    } else {
+        // --- Parent Process ---
+        int status;
+        if (waitpid(pid, &status, 0) == -1) {
+            perror("waitpid");
+            va_end(args);
+            return false;
+        }
+
+        va_end(args);
+        // Check if child exited normally and returned 0
+        return (WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    }
 /*
  * TODO:
  *   Execute a system command by calling fork, execv(),
@@ -85,6 +124,49 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
     command[count] = command[count];
 
 
+    // --- Logic for do_exec_redirect ---
+    int fd = open(outputfile, O_WRONLY|O_TRUNC|O_CREAT, 0644);
+    if (fd < 0) { 
+        perror("open"); 
+        va_end(args);
+        return false; 
+    }
+
+    fflush(stdout);
+    pid_t pid = fork();
+
+    if (pid == -1) {
+        perror("fork");
+        close(fd);
+        va_end(args);
+        return false;
+    }
+
+    if (pid == 0) {
+        // --- Child Process ---
+        // Redirect stdout (1) to our file descriptor (fd)
+        if (dup2(fd, 1) < 0) { 
+            perror("dup2"); 
+            exit(EXIT_FAILURE); 
+        }
+        close(fd); // Close the original fd after duplicating
+
+        execv(command[0], command);
+        perror("execv");
+        exit(EXIT_FAILURE);
+    } else {
+        // --- Parent Process ---
+        close(fd); // Parent doesn't need the file descriptor
+        int status;
+        if (waitpid(pid, &status, 0) == -1) {
+            perror("waitpid");
+            va_end(args);
+            return false;
+        }
+
+        va_end(args);
+        return (WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    }
 /*
  * TODO
  *   Call execv, but first using https://stackoverflow.com/a/13784315/1446624 as a refernce,
