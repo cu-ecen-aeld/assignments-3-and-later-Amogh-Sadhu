@@ -3,8 +3,11 @@ CFLAGS ?= -Wall -Werror -g
 TARGET = aesdsocket
 LDFLAGS ?= -lpthread
 
-all: $(TARGET)
+all: install-deps $(TARGET) 
 
+install-deps:
+	sudo apt-get update && sudo apt-get install -y netcat-openbsd valgrind
+	
 aesdsocket.o : aesdsocket.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
