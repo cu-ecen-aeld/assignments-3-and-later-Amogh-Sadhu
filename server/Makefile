@@ -2,8 +2,8 @@ CC ?= $(CROSS_COMPILE)gcc
 CFLAGS ?= -Wall -Werror -g
 TARGET = aesdsocket
 LDFLAGS ?= -lpthread
-
-all: install-deps $(TARGET) 
+s
+all: $(TARGET) 
 
 install-deps:
 	sudo apt-get update && sudo apt-get install -y netcat-openbsd valgrind
