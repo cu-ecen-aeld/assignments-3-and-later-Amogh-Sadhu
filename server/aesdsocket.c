@@ -35,36 +35,36 @@ void signalHandlerShared(int sig){
 
 int main(int argc, char* argv[]){
 
-//Setting up the signals
-struct sigaction sa;
-memset(&sa,0,sizeof(sa));
-sa.sa_handler = signalHandlerShared;
-sa.sa_flags = 0;
+    //Setting up the signals
+    struct sigaction sa;
+    memset(&sa,0,sizeof(sa));
+    sa.sa_handler = signalHandlerShared;
+    sa.sa_flags = 0;
 
-sigaction(SIGINT, &sa, NULL);
-sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
 
-//file related declarations
-FILE *fp;
-const char* fileName = "/var/tmp/aesdsocketdata";    
-remove(fileName);
+    //file related declarations
+    FILE *fp;
+    const char* fileName = "/var/tmp/aesdsocketdata";    
+    remove(fileName);
 
-// Socket related declarations
-int socketFd, newSocket;
-char *buffer = NULL;
-ssize_t bytesRecived;
-struct sockaddr_in address;
-struct sockaddr_in addressClient;
+    // Socket related declarations
+    int socketFd, newSocket;
+    char *buffer = NULL;
+    ssize_t bytesRecived;
+    struct sockaddr_in address;
+    struct sockaddr_in addressClient;
 
-// Filling the address structure for server
-address.sin_port = htons(PORT); 
-address.sin_family = AF_INET;
-address.sin_addr.s_addr = INADDR_ANY;
+    // Filling the address structure for server
+    address.sin_port = htons(PORT); 
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
 
-socklen_t socketLength = sizeof(address);
-socklen_t socketLengthClient = sizeof(addressClient);
+    socklen_t socketLength = sizeof(address);
+    socklen_t socketLengthClient = sizeof(addressClient);
 
-openlog("aesdsocket", LOG_PID, LOG_USER);
+    openlog("aesdsocket", LOG_PID, LOG_USER);
 
     if((socketFd = socket(AF_INET, SOCK_STREAM, 0)) < 0){
         return -1;
