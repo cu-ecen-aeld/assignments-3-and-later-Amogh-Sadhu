@@ -219,7 +219,7 @@ static void* threadfunc(void * threadData) {
 
     // --- WRITE PHASE ---
     #ifdef USE_AESD_CHAR_DEVICE
-        int fd = open(fileName, O_WRONLY | O_APPEND | O_CREAT, 0666);
+        int fd = open(fileName, O_WRONLY, 0666);
         if(fd >= 0) {
     #else
         FILE *fp = fopen(fileName, "a");
