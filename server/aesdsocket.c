@@ -16,6 +16,9 @@
 #include <stdbool.h>
 #include <time.h>
 
+#include <fcntl.h>   // For open() and O_ flags
+#include <unistd.h>  // For read(), write(), close()
+
 #include "linkeListLib.h"
 
 /* =========================================================================
@@ -24,6 +27,7 @@
 #define PORT 9000
 #define BUFFER_SIZE 1024
 
+#define USE_AESD_CHAR_DEVICE
 /* =========================================================================
    3. TYPE DEFINITIONS
    ========================================================================= */
@@ -42,8 +46,11 @@ typedef struct threadData
 volatile sig_atomic_t keep_running  = 1;     //will edit this in signal handling part
 
 pthread_mutex_t threadMutex;
-
-const char* fileName = "/var/tmp/aesdsocketdata";
+#ifdef USE_AESD_CHAR_DEVICE
+    const char* fileName = "/dev/aesdchar";
+#else 
+   const char* fileName = "/var/tmp/aesdsocketdata"; 
+#endif
 
 /* =========================================================================
    5. STATIC VARIABLES
@@ -88,9 +95,11 @@ int main(int argc, char* argv[]){
     //Setting up the mutex and  thread
     pthread_t timerThread;
     pthread_mutex_init(&threadMutex, NULL);
-    Node* head = NULL;
+    Node* head = NULL;  
 
-    remove(fileName);
+    #ifndef USE_AESD_CHAR_DEVICE
+        remove(fileName);
+    #endif
 
     openlog("aesdsocket", LOG_PID, LOG_USER);
 
@@ -118,10 +127,12 @@ int main(int argc, char* argv[]){
     if (pid > 0) exit(0);   // Parent exits, child continues
     }
 
+    #ifndef USE_AESD_CHAR_DEVICE
     //Timer thread Implementation
     if((pthread_create(&timerThread, NULL, timerThreadFunc, NULL)) != 0){
             printf("Failed to create timer \n");
         }
+    #endif
 
     while(keep_running){        // While loop to continuously waiting for connections
         socketLengthClient = sizeof(addressClient);    //update the length  
@@ -153,7 +164,9 @@ int main(int argc, char* argv[]){
     shutdown(socketFd,SHUT_RDWR);
 
     //Timer thread joining 
-    pthread_join(timerThread, NULL);
+    #ifndef USE_AESD_CHAR_DEVICE
+        pthread_join(timerThread, NULL);
+    #endif
 
     // Final sweep: Join every thread regardless of the flag
     while(head != NULL) {
@@ -164,7 +177,10 @@ int main(int argc, char* argv[]){
     }
 
     pthread_mutex_destroy(&threadMutex);
-    remove(fileName);
+    
+    #ifndef USE_AESD_CHAR_DEVICE
+        remove(fileName);
+    #endif
 
     closelog();
 return 0;
@@ -189,54 +205,68 @@ static void signalHandlerShared(int sig){
 }
 
 //Thread function which accepts void and takes void* as arg
-static void* threadfunc(void * threadData){
+static void* threadfunc(void * threadData) {
     char *buffer = NULL;
-
-    //file related declarations
-    FILE *fp;    
-
     threadData_t* tInfo = (threadData_t*)threadData;
-    int newSocket  = tInfo->accpetedSocket;
-    struct sockaddr_in addressClient = tInfo->socketAddress;
+    int newSocket = tInfo->accpetedSocket;
 
-    buffer = (char*)malloc(BUFFER_SIZE*sizeof(char));       //allocate the memory
-    if(buffer == NULL){
-        tInfo->threadCompleteFlag = 1;
-        pthread_exit(NULL);
+    buffer = (char*)malloc(BUFFER_SIZE);
+    if(buffer == NULL) {
+        tInfo->threadCompleteFlag = true;
+        close(newSocket);
+        return NULL;
     }
 
-    pthread_mutex_lock(tInfo->threadMutex);     //Lock the mutex here     
-    fp = fopen(fileName, "a");
-    if(fp != NULL){
+    // --- WRITE PHASE ---
+    #ifdef USE_AESD_CHAR_DEVICE
+        int fd = open(fileName, O_WRONLY | O_APPEND | O_CREAT, 0666);
+        if(fd >= 0) {
+    #else
+        FILE *fp = fopen(fileName, "a");
+        if(fp != NULL) {
+    #endif
         ssize_t bytesRecived;
-        while((bytesRecived = recv(newSocket, buffer,BUFFER_SIZE, 0)) > 0){
-
-            fwrite(buffer, sizeof(char), bytesRecived, fp); 
-            if(memchr(buffer, '\n', bytesRecived) != NULL){
-                break;
-            }  
-        }          
-    fclose(fp);
-    }
-    pthread_mutex_unlock(tInfo->threadMutex);     //Unlock the mutex here 
-
-    pthread_mutex_lock(tInfo->threadMutex);
-    fp = fopen(fileName, "r");
-    if(fp != NULL){
-        int readBytes;
-        while((readBytes = (fread(buffer, sizeof(char), BUFFER_SIZE, fp))) > 0){
-            send(newSocket, buffer, readBytes, 0);
+        while((bytesRecived = recv(newSocket, buffer, BUFFER_SIZE, 0)) > 0) {
+            #ifdef USE_AESD_CHAR_DEVICE
+                write(fd, buffer, bytesRecived);
+            #else  
+                fwrite(buffer, 1, bytesRecived, fp); 
+            #endif
+            if(memchr(buffer, '\n', bytesRecived)) break;
         }
-    fclose(fp);
+        #ifdef USE_AESD_CHAR_DEVICE
+            close(fd);
+        #else      
+            fclose(fp);
+        #endif
     }
-    pthread_mutex_unlock(tInfo->threadMutex);     //Unlock the mutex here 
+
+    // --- READ PHASE ---
+    #ifdef USE_AESD_CHAR_DEVICE
+        int fd_read = open(fileName, O_RDONLY);
+        if(fd_read >= 0) {
+            ssize_t readBytes;
+            while((readBytes = read(fd_read, buffer, BUFFER_SIZE)) > 0) {
+                send(newSocket, buffer, readBytes, 0);
+            }
+            close(fd_read);
+        }
+    #else
+        FILE *fp_read = fopen(fileName, "r");
+        if(fp_read != NULL) {
+            size_t readBytes;
+            while((readBytes = fread(buffer, 1, BUFFER_SIZE, fp_read)) > 0) {
+                send(newSocket, buffer, readBytes, 0);
+            }
+            fclose(fp_read);
+        }
+    #endif
 
     shutdown(newSocket, SHUT_RDWR); 
-    syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(addressClient.sin_addr));
+    close(newSocket);
     free(buffer);
-    tInfo->threadCompleteFlag = 1;
-
-return NULL;
+    tInfo->threadCompleteFlag = true;
+    return NULL;
 }
 
 static Node* checkJoinAndPruneThreads(Node* head){
