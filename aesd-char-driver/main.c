@@ -21,6 +21,7 @@
 #include <linux/kernel.h>  // container_of
 #include <linux/mutex.h>   // mutex
 #include "aesdchar.h"
+#include "aesd_ioctl.h"
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
@@ -94,7 +95,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 
     if (mutex_lock_interruptible(&dev->lock))
         return -ERESTARTSYS;
-
+ 
     // Get the memory from kernel if already have it and want to expand it used krealloc    
     // used temp_ptr cause if krealloc fails it would set our original pointer to NULL
     // and it will be lost
@@ -110,8 +111,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 
     // copy the data from user with size offset to not overwrite the data
     // if it is a recurring send and we havent yet got \n
-    if (copy_from_user((char *)dev->working_entry.buffptr + dev->working_entry.size, 
-                       buf, count)) {
+    if (copy_from_user((char *)dev->working_entry.buffptr + dev->working_entry.size, buf, count)) {
         retval = -EFAULT;
         goto out;
 
@@ -142,12 +142,97 @@ out:
     return retval;
 }
 
+loff_t aesd_llseek(struct file *filp , loff_t offset, int whence)
+{
+    struct aesd_dev *dev = filp->private_data;
+    ssize_t totalSize = 0;
+    uint8_t index;
+    struct aesd_buffer_entry *entry;
+    loff_t newPosition;
+
+    if (mutex_lock_interruptible(&dev->lock))
+        return -ERESTARTSYS;
+
+    AESD_CIRCULAR_BUFFER_FOREACH(entry, &dev->buffer, index){
+        totalSize += entry->size;
+    }
+
+    newPosition =  fixed_size_llseek(filp, offset, whence, totalSize);
+
+    mutex_unlock(&dev->lock);
+
+    return newPosition;
+}
+
+long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg){
+    
+    struct aesd_dev *dev = filp->private_data;
+    uint8_t currentOutOffset = dev->buffer.out_offs;
+    struct aesd_seekto ioctlStruct;
+    uint32_t cmdNum, cmdOffset, cmdOffsetCircular;
+    ssize_t bytesInBetween = 0, bufferEntries = 0;
+    uint8_t index;
+    struct aesd_buffer_entry *entry;
+
+    if (mutex_lock_interruptible(&dev->lock))
+        return -ERESTARTSYS;
+
+    switch (cmd)
+    {
+    case AESDCHAR_IOCSEEKTO:
+
+        if (copy_from_user(&ioctlStruct, (struct aesd_seekto __user *)arg, sizeof(struct aesd_seekto))) {
+            mutex_unlock(&dev->lock);
+            return -EFAULT;
+        }
+
+        //We get the user sent data here
+        cmdNum = ioctlStruct.write_cmd;
+        cmdOffset = ioctlStruct.write_cmd_offset;
+
+        // Here we calculate number of entries present in the buffer
+        AESD_CIRCULAR_BUFFER_FOREACH(entry, &dev->buffer, index){
+            bufferEntries++;
+        }
+
+        //Checking if zero refrenced command is no greater than present number of entries
+        if(cmdNum < bufferEntries){
+
+            //Iterating from current position to target cmd to calculate linear bytes in between
+            for(int i = 0; i<cmdNum;i++){
+                cmdOffsetCircular = (currentOutOffset + i) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+                bytesInBetween += dev->buffer.entry[cmdOffsetCircular].size;
+            }
+            
+            //If loop doesnt run we still calculate target cmd
+            cmdOffsetCircular = (currentOutOffset + cmdNum ) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+            if(cmdOffset >= dev->buffer.entry[cmdOffsetCircular].size){
+                mutex_unlock(&dev->lock);
+                return -EINVAL;
+            }
+            // Seek the file position
+            filp->f_pos = bytesInBetween + cmdOffset;
+        }
+        else{
+            mutex_unlock(&dev->lock);
+            return -EINVAL;
+        }
+        break;
+    }
+    mutex_unlock(&dev->lock);
+
+return 0;
+}
+
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
     .read =     aesd_read,
     .write =    aesd_write,
     .open =     aesd_open,
     .release =  aesd_release,
+    .llseek = aesd_llseek,
+    .unlocked_ioctl = aesd_ioctl,
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)

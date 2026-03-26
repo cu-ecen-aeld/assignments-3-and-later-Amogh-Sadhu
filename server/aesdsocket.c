@@ -15,11 +15,14 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <time.h>
+#include <sys/ioctl.h>
 
 #include <fcntl.h>   // For open() and O_ flags
 #include <unistd.h>  // For read(), write(), close()
 
 #include "linkeListLib.h"
+
+#include "../aesd-char-driver/aesd_ioctl.h"
 
 /* =========================================================================
    2. PREPROCESSOR DEFINES & MACROS
@@ -209,6 +212,10 @@ static void* threadfunc(void * threadData) {
     char *buffer = NULL;
     threadData_t* tInfo = (threadData_t*)threadData;
     int newSocket = tInfo->accpetedSocket;
+    ssize_t bytesRecived, totalBytes = 0;
+    // special cmd and ioctl related declarations
+    uint32_t x,y;
+    struct aesd_seekto ioctlStruct;
 
     buffer = (char*)malloc(BUFFER_SIZE);
     if(buffer == NULL) {
@@ -217,49 +224,70 @@ static void* threadfunc(void * threadData) {
         return NULL;
     }
 
-    // --- WRITE PHASE ---
-    #ifdef USE_AESD_CHAR_DEVICE
-        int fd = open(fileName, O_WRONLY, 0666);
-        if(fd >= 0) {
-    #else
-        FILE *fp = fopen(fileName, "a");
-        if(fp != NULL) {
-    #endif
-        ssize_t bytesRecived;
-        while((bytesRecived = recv(newSocket, buffer, BUFFER_SIZE, 0)) > 0) {
-            #ifdef USE_AESD_CHAR_DEVICE
-                write(fd, buffer, bytesRecived);
-            #else  
-                fwrite(buffer, 1, bytesRecived, fp); 
-            #endif
-            if(memchr(buffer, '\n', bytesRecived)) break;
-        }
-        #ifdef USE_AESD_CHAR_DEVICE
-            close(fd);
-        #else      
-            fclose(fp);
-        #endif
+    while((bytesRecived = recv(newSocket, buffer + totalBytes, BUFFER_SIZE - 1 - totalBytes, 0)) > 0) {
+        char* newLineChar= memchr(buffer + totalBytes, '\n', bytesRecived);
+        totalBytes += bytesRecived;
+        if(newLineChar) break;
     }
+    buffer[totalBytes] = '\0';  //end the string with \0
 
-    // --- READ PHASE ---
     #ifdef USE_AESD_CHAR_DEVICE
-        int fd_read = open(fileName, O_RDONLY);
-        if(fd_read >= 0) {
+
+        int fd = open(fileName, O_RDWR, 0666);
+        if(fd >= 0){
+            //CUSTOM CMD CHECK PHASE
+            if((sscanf(buffer, "AESDCHAR_IOCSEEKTO:%u,%u", &x, &y)) == 2){
+                //This is a special command
+                ioctlStruct.write_cmd = x;
+                ioctlStruct.write_cmd_offset = y;
+                ioctl(fd, AESDCHAR_IOCSEEKTO, &ioctlStruct);
+                ssize_t readBytes;
+                while((readBytes = read(fd, buffer, BUFFER_SIZE)) > 0) {
+                    send(newSocket, buffer, readBytes, 0);
+                }
+                close(fd);
+                shutdown(newSocket, SHUT_RDWR); 
+                close(newSocket);
+                free(buffer);
+                tInfo->threadCompleteFlag = true;
+                return NULL;
+            }
+            // NORMAL WRITE PHASE
+            else{
+                write(fd, buffer, totalBytes);
+                lseek(fd, 0, SEEK_SET);
+            }
+
+            //NORMAL READ PHASE
+
             ssize_t readBytes;
-            while((readBytes = read(fd_read, buffer, BUFFER_SIZE)) > 0) {
+            while((readBytes = read(fd, buffer, BUFFER_SIZE)) > 0) {
                 send(newSocket, buffer, readBytes, 0);
             }
-            close(fd_read);
+            close(fd);
         }
     #else
-        FILE *fp_read = fopen(fileName, "r");
-        if(fp_read != NULL) {
-            size_t readBytes;
-            while((readBytes = fread(buffer, 1, BUFFER_SIZE, fp_read)) > 0) {
-                send(newSocket, buffer, readBytes, 0);
-            }
-            fclose(fp_read);
+
+    pthread_mutex_lock(tInfo->threadMutex);     //Lock the mutex here     
+    fp = fopen(fileName, "a");
+    if(fp != NULL){
+            fwrite(buffer, sizeof(char), totalBytes, fp); 
+          
+            fclose(fp);
+    }
+    pthread_mutex_unlock(tInfo->threadMutex);     //Unlock the mutex here 
+
+    pthread_mutex_lock(tInfo->threadMutex);
+    fp = fopen(fileName, "r");
+    if(fp != NULL){
+        int readBytes;
+        while((readBytes = (fread(buffer, sizeof(char), BUFFER_SIZE, fp))) > 0){
+            send(newSocket, buffer, readBytes, 0);
         }
+    fclose(fp);
+    }
+    pthread_mutex_unlock(tInfo->threadMutex);     //Unlock the mutex here 
+
     #endif
 
     shutdown(newSocket, SHUT_RDWR); 

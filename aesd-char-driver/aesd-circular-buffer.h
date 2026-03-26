@@ -30,7 +30,7 @@ struct aesd_buffer_entry
     size_t size;
 };
 
-struct aesd_circular_buffer
+struct  aesd_circular_buffer
 {
     /**
      * An array of pointers to memory allocated for the most recent write operations
